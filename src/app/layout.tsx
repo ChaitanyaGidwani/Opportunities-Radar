@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import { Bricolage_Grotesque } from "next/font/google";
+import { AppShell } from "@/components/layout/app-shell";
 import "./globals.css";
 
 const geist = Geist({
@@ -46,7 +47,7 @@ export default function RootLayout({
       <body
         className={`${geist.variable} ${geistMono.variable} ${bricolage.variable}`}
       >
-        {children}
+        <AppShell>{children}</AppShell>
       </body>
     </html>
   );

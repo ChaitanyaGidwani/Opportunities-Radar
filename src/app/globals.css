@@ -50,17 +50,17 @@
 }
 
 :root {
-  --c-base: #f3f6f6;
-  --c-surface: #fff;
-  --c-line: #e4e9e9;
-  --c-line-strong: #d0d7d7;
-  --c-ink: #101719;
-  --c-ink-2: #4f585a;
-  --c-ink-3: #818b8c;
-  --c-elevated: #fff;
-  --c-signal: oklch(0.555 0.118 193);
-  --shadow-card: 0 1px 2px rgba(8,22,24,.05), 0 1px 3px rgba(8,22,24,.06);
-  color-scheme: light;
+  --c-base: #050505;
+  --c-surface: rgba(255, 255, 255, 0.03);
+  --c-line: rgba(255, 255, 255, 0.08);
+  --c-line-strong: rgba(255, 255, 255, 0.15);
+  --c-ink: #ffffff;
+  --c-ink-2: #a1a1aa; /* zinc-400 */
+  --c-ink-3: #52525b; /* zinc-600 */
+  --c-elevated: rgba(255, 255, 255, 0.05);
+  --c-signal: oklch(0.715 0.146 192);
+  --shadow-card: 0 4px 24px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.1);
+  color-scheme: dark;
 }
 
 /* ── Base styles ── */
@@ -72,7 +72,6 @@
 }
 
 html {
-  scroll-behavior: smooth;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
@@ -113,8 +112,10 @@ h3 { font-size: 1.125rem; }
 }
 
 .panel-hover:hover {
-  transform: translateY(-3px);
-  box-shadow: 0 4px 12px rgba(8,22,24,.08), 0 1px 3px rgba(8,22,24,.06);
+  transform: translateY(-4px);
+  box-shadow: 0 12px 32px rgba(0,0,0,0.6), inset 0 1px 0 rgba(255, 255, 255, 0.15), 0 0 0 1px var(--color-signal-500);
+  background: rgba(255, 255, 255, 0.05);
+  backdrop-filter: blur(24px);
 }
 
 .panel-hover::after {
@@ -124,9 +125,9 @@ h3 { font-size: 1.125rem; }
   left: 0;
   right: 0;
   height: 2px;
-  background: var(--color-signal-500);
+  background: linear-gradient(90deg, transparent, var(--color-signal-500), transparent);
   opacity: 0;
-  transition: opacity 0.2s ease;
+  transition: opacity 0.3s ease;
 }
 
 .panel-hover:hover::after {
@@ -157,10 +158,10 @@ h3 { font-size: 1.125rem; }
 /* ── Glass app bar (the ONE blur layer) ── */
 
 .glass-bar {
-  background: rgba(255, 255, 255, 0.82);
-  backdrop-filter: blur(16px) saturate(1.6);
-  -webkit-backdrop-filter: blur(16px) saturate(1.6);
-  border-bottom: 1px solid var(--c-line);
+  background: rgba(10, 10, 10, 0.6);
+  backdrop-filter: blur(24px) saturate(1.8);
+  -webkit-backdrop-filter: blur(24px) saturate(1.8);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
 }
 
 /* ── Live blip animation ── */
@@ -181,8 +182,10 @@ h3 { font-size: 1.125rem; }
 
 .pill-nav {
   border-radius: 999px;
-  background: var(--c-surface);
-  box-shadow: 0 2px 16px rgba(8,22,24,.10), 0 0 0 1px var(--c-line);
+  background: rgba(15, 15, 15, 0.75);
+  backdrop-filter: blur(24px) saturate(1.8);
+  -webkit-backdrop-filter: blur(24px) saturate(1.8);
+  box-shadow: 0 8px 32px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255, 255, 255, 0.1), 0 0 0 1px rgba(255, 255, 255, 0.05);
 }
 
 /* ── Focus ring ── */
@@ -210,4 +213,26 @@ h3 { font-size: 1.125rem; }
 
 ::-webkit-scrollbar-thumb:hover {
   background: var(--c-ink-3);
+}
+
+/* ── No scrollbar (for horizontal rails) ── */
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+/* ── Snap scroll ── */
+
+.snap-x { scroll-snap-type: x mandatory; }
+.snap-start { scroll-snap-align: start; }
+.snap-mandatory { scroll-snap-type: x mandatory; }
+
+/* ── Safe area padding for iOS ── */
+
+.pb-safe {
+  padding-bottom: env(safe-area-inset-bottom, 0);
 }
