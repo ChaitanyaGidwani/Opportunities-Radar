@@ -1,152 +1,146 @@
 "use client";
 
-import { usePathname } from "next/navigation";
+import { useEffect } from "react";
 import Link from "next/link";
-import {
-  Home,
-  Star,
-  Bookmark,
-  Bell,
-  User,
-  Search,
-  type LucideIcon,
-} from "lucide-react";
-import { BrandMark, Wordmark } from "@/components/brand/mark";
+import { usePathname } from "next/navigation";
+import { Home, Bookmark, User, Bell, Search, Star } from "lucide-react";
+import { Wordmark } from "../brand/mark";
+import { CommandPalette } from "../command/command-palette";
+import { useProfile } from "@/store/profile";
+import { useCollections } from "@/store/collections";
+import { useNudges } from "@/store/nudges";
+import { usePrefs } from "@/store/prefs";
+import { useCommand } from "@/store/command";
+import { cn } from "@/lib/utils";
 
-const NAV_ITEMS: { href: string; icon: LucideIcon; label: string }[] = [
-  { href: "/feed", icon: Home, label: "Home" },
-  { href: "/for-you", icon: Star, label: "For You" },
-  { href: "/saved", icon: Bookmark, label: "Saved" },
-  { href: "/profile", icon: User, label: "Profile" },
+const NAV = [
+  { href: "/feed", label: "Home", icon: Home },
+  { href: "/for-you", label: "For You", icon: Star },
+  { href: "/saved", label: "Saved", icon: Bookmark },
+  { href: "/profile", label: "Profile", icon: User },
 ];
+
+function useDueCount() {
+  const nudges = useNudges((s) => s.nudges);
+  const readIds = usePrefs((s) => s.readIds);
+  return nudges.filter((n) => n.due && !readIds.includes(n.id)).length;
+}
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
+  const profile = useProfile((s) => s.profile);
+  const hydrated = useProfile((s) => s.hydrated);
+  const saved = useCollections((s) => s.saved);
+  const collHydrated = useCollections((s) => s.hydrated);
+  const loadNudges = useNudges((s) => s.load);
+  const openCommand = useCommand((s) => s.setOpen);
+  const due = useDueCount();
+
+  const isActive = (href: string) =>
+    pathname === href || (href === "/feed" && (pathname === "/" || pathname.startsWith("/c/")));
+
+  useEffect(() => {
+    if (hydrated && collHydrated) loadNudges(profile, saved);
+  }, [hydrated, collHydrated, profile, saved, loadNudges]);
+
+  const bell = (
+    <Link
+      href="/notifications"
+      aria-label={`Deadline alerts${due > 0 ? ` (${due} new)` : ""}`}
+      className={cn(
+        "relative grid h-9 w-9 place-items-center rounded-full transition-colors",
+        pathname === "/notifications" ? "bg-signal-500/10 text-signal-600" : "text-ink-2 hover:bg-elevated",
+      )}
+    >
+      <Bell size={18} />
+      {due > 0 && (
+        <span className="absolute -right-0.5 -top-0.5 grid h-4 min-w-4 place-items-center rounded-full bg-danger px-1 text-[9px] font-bold text-white tabular-nums">
+          {due}
+        </span>
+      )}
+    </Link>
+  );
 
   return (
-    <div className="flex h-dvh w-full overflow-hidden">
-      {/* ── Desktop sidebar ── */}
-      <aside className="hidden md:flex w-60 flex-col border-r border-line shrink-0" style={{ background: 'rgba(10, 10, 10, 0.4)', backdropFilter: 'blur(32px)' }}>
-        <Link href="/feed" className="px-5 py-5 flex items-center gap-3">
-          <BrandMark size={32} />
-          <Wordmark />
-        </Link>
-
-        <nav className="flex-1 px-3 space-y-1 mt-2">
-          {NAV_ITEMS.map((item) => (
-            <SidebarItem
-              key={item.href}
-              href={item.href}
-              icon={item.icon}
-              label={item.label}
-              active={pathname === item.href || pathname.startsWith(item.href + "/")}
-            />
-          ))}
-          <SidebarItem
-            href="/notifications"
-            icon={Bell}
-            label="Alerts"
-            active={pathname === "/notifications"}
-          />
-        </nav>
-
-        <div className="px-3 pb-4 pt-2 border-t border-line">
-          <button className="flex items-center gap-3 w-full p-3 rounded-lg text-ink-2 text-sm font-medium hover:bg-[rgba(255,255,255,0.05)] transition-colors">
-            <Search className="w-4 h-4" />
-            <span>Search</span>
-            <kbd className="ml-auto text-[10px] px-1.5 py-0.5 rounded bg-[rgba(255,255,255,0.05)] border border-line text-ink-3 font-mono">⌘K</kbd>
-          </button>
-        </div>
-      </aside>
-
-      {/* ── Main content ── */}
-      <main className="flex-1 h-full overflow-y-auto relative">
-        {/* Mobile top bar */}
-        <header className="md:hidden glass-bar sticky top-0 z-40 px-4 py-3 flex items-center justify-between">
-          <Link href="/feed" className="flex items-center gap-2">
-            <BrandMark size={28} />
-            <Wordmark />
+    <div className="flex min-h-dvh flex-col">
+      {/* Top app bar */}
+      <header className="glass sticky top-0 z-40 border-b border-line">
+        <div className="mx-auto flex h-14 w-full max-w-6xl items-center gap-3 px-4">
+          <Link href="/feed" aria-label="Argus home">
+            <Wordmark size={24} />
           </Link>
-          <div className="flex items-center gap-2">
-            <Link
-              href="/notifications"
-              className="w-9 h-9 flex items-center justify-center rounded-full hover:bg-[rgba(255,255,255,0.05)] transition-colors relative"
-            >
-              <Bell className="w-[18px] h-[18px] text-ink-2" />
-              <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-danger shadow-[0_0_8px_var(--color-danger)]" />
-            </Link>
+
+          {/* desktop search */}
+          <button
+            onClick={() => openCommand(true)}
+            className="hidden h-9 max-w-sm flex-1 items-center gap-2 rounded-full border border-line bg-base px-4 text-[13px] text-ink-3 transition-colors hover:border-ink-3 md:flex"
+          >
+            <Search size={15} />
+            <span>Search internships, scholarships, hackathons…</span>
+            <kbd className="ml-auto rounded border border-line-strong px-1.5 py-0.5 font-mono text-[10px]">⌘K</kbd>
+          </button>
+
+          <div className="flex-1 md:hidden" />
+
+          {/* desktop nav */}
+          <nav className="hidden items-center gap-1 md:flex">
+            {NAV.map((item) => {
+              const active = isActive(item.href);
+              const Icon = item.icon;
+              return (
+                <Link
+                  key={item.href}
+                  href={item.href}
+                  className={cn(
+                    "flex items-center gap-2 rounded-full px-3.5 py-2 text-[13px] font-medium transition-colors",
+                    active ? "bg-signal-500/10 text-signal-600" : "text-ink-2 hover:bg-elevated hover:text-ink",
+                  )}
+                >
+                  <Icon size={16} />
+                  {item.label}
+                </Link>
+              );
+            })}
+          </nav>
+
+          {/* top-right: search (mobile) + alerts bell */}
+          <div className="flex items-center gap-1 md:ml-1">
+            <button onClick={() => openCommand(true)} aria-label="Search" className="grid h-9 w-9 place-items-center rounded-full text-ink-2 hover:bg-elevated md:hidden">
+              <Search size={18} />
+            </button>
+            {bell}
           </div>
-        </header>
-
-        <div className="w-full max-w-6xl mx-auto pb-24 md:pb-8">
-          {children}
         </div>
+      </header>
 
-        {/* ── Mobile bottom pill nav ── */}
-        <nav className="md:hidden fixed bottom-4 left-4 right-4 z-50 pill-nav px-2 py-2">
-          <div className="flex items-center justify-around">
-            {NAV_ITEMS.map((item) => (
-              <PillNavItem
+      <main className="mx-auto w-full max-w-6xl flex-1 pb-24 md:pb-12">{children}</main>
+
+      {/* Floating pill tab bar (mobile) */}
+      <nav className="fixed inset-x-0 bottom-0 z-40 flex justify-center px-4 pb-[max(0.7rem,env(safe-area-inset-bottom))] md:hidden">
+        <div className="flex w-full max-w-sm items-center justify-around rounded-[22px] border border-line bg-surface px-1.5 py-1.5 shadow-[0_10px_34px_-10px_rgba(8,30,33,0.3)]">
+          {NAV.map((item) => {
+            const active = isActive(item.href);
+            const Icon = item.icon;
+            return (
+              <Link
                 key={item.href}
                 href={item.href}
-                icon={item.icon}
-                label={item.label}
-                active={pathname === item.href || pathname.startsWith(item.href + "/")}
-              />
-            ))}
-          </div>
-        </nav>
-      </main>
+                className={cn(
+                  "flex flex-1 flex-col items-center gap-0.5 py-1 text-[10.5px] font-medium transition-colors",
+                  active ? "text-signal-600" : "text-ink-3",
+                )}
+              >
+                <span className={cn("grid h-8 w-8 place-items-center rounded-full transition-colors", active && "bg-signal-500/12")}>
+                  <Icon size={19} strokeWidth={active ? 2.5 : 2} />
+                </span>
+                {item.label}
+              </Link>
+            );
+          })}
+        </div>
+      </nav>
+
+      <CommandPalette />
     </div>
-  );
-}
-
-function SidebarItem({
-  href,
-  icon: Icon,
-  label,
-  active,
-}: {
-  href: string;
-  icon: LucideIcon;
-  label: string;
-  active: boolean;
-}) {
-  return (
-    <Link
-      href={href}
-      className={`flex items-center gap-3 px-3 py-2.5 rounded-[var(--radius-control)] transition-all text-sm font-medium ${
-        active
-          ? "bg-[rgba(255,255,255,0.1)] text-white font-semibold shadow-[inset_2px_0_0_var(--color-signal-500)]"
-          : "text-ink-2 hover:bg-[rgba(255,255,255,0.03)] hover:text-ink"
-      }`}
-    >
-      <Icon className="w-[18px] h-[18px]" style={active ? { filter: 'drop-shadow(0 0 8px var(--color-signal-500))', color: 'var(--color-signal-500)' } : undefined} />
-      <span>{label}</span>
-    </Link>
-  );
-}
-
-function PillNavItem({
-  href,
-  icon: Icon,
-  label,
-  active,
-}: {
-  href: string;
-  icon: LucideIcon;
-  label: string;
-  active: boolean;
-}) {
-  return (
-    <Link
-      href={href}
-      className={`flex flex-col items-center gap-0.5 px-3 py-1.5 rounded-xl transition-all ${
-        active ? "text-signal-600" : "text-ink-3"
-      }`}
-    >
-      <Icon className="w-5 h-5" style={active ? { fill: "var(--color-signal-50)" } : undefined} />
-      <span className={`text-[10px] ${active ? "font-bold" : "font-medium"}`}>{label}</span>
-    </Link>
   );
 }

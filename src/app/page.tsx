@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
 
-/** Golden rule #1: Open straight into the product. / → /feed */
 export default function Home() {
+  // Open straight into the listings, like a real opportunity board.
   redirect("/feed");
 }

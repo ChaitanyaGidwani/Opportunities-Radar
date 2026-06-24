@@ -1,123 +1,96 @@
-// ── MLH adapter — hackathon ──
-// GET https://mlh.com/seasons/2026/events → extract the embedded "upcomingEvents":[…] JSON blob
-
 import type { Opportunity, SourceAdapter } from "../types";
-import { parseDate } from "../parse";
-import { normalizeTags } from "../normalize";
+import { buildTags } from "../normalize";
+import { toISO } from "../parse";
+import { BROWSER_UA, buildOpportunity, fetchText } from "./_shared";
 
-const META = {
-  id: "mlh",
-  label: "MLH",
-  category: "hackathon" as const,
-  homepage: "https://mlh.com",
-  tier: "green" as const,
-};
+// MLH (Major League Hacking) season events. No API, but the season page embeds a
+// JSON payload with an `upcomingEvents` array — we extract that directly (far more
+// robust than DOM scraping). Keyless. Deep-links to each event's own website.
+const SEASON_URL = "https://mlh.com/seasons/2026/events";
 
-interface MLHEvent {
-  name: string;
+interface MlhEvent {
+  name?: string;
+  startsAt?: string;
+  endsAt?: string;
+  dateRange?: string;
   url?: string;
-  image_url?: string;
-  logo_url?: string;
-  background_url?: string;
-  start_date?: string;
-  end_date?: string;
+  websiteUrl?: string;
   location?: string;
-  is_hybrid?: boolean;
-  themes?: string[];
+  formatType?: string; // "digital" | "physical" | "hybrid"
+  logoUrl?: string;
+  backgroundUrl?: string;
 }
 
-export const mlhAdapter: SourceAdapter = {
-  meta: META,
-  async fetch() {
-    const res = await fetch("https://mlh.com/seasons/2026/events", {
-      headers: {
-        "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-        Accept: "text/html",
-      },
-      signal: AbortSignal.timeout(15000),
-    });
-    if (!res.ok) throw new Error(`MLH page ${res.status}`);
-    const html = await res.text();
-
-    // Extract the embedded JSON blob via bracket-matching (don't DOM-scrape)
-    const events = extractEventsFromHTML(html);
-    return events.map(toOpportunity);
-  },
-};
-
-function extractEventsFromHTML(html: string): MLHEvent[] {
-  // Look for the upcomingEvents JSON blob in the page source
-  const patterns = [
-    /"upcomingEvents"\s*:\s*\[/,
-    /"events"\s*:\s*\[/,
-    /data-events='(\[.*?\])'/,
-  ];
-
-  for (const pattern of patterns) {
-    const match = pattern.exec(html);
-    if (match) {
-      // For data attribute pattern
-      if (match[1]) {
+/** Extract a JSON array value by key from a larger blob via bracket matching. */
+function extractJsonArray(html: string, key: string): unknown[] | null {
+  const marker = `"${key}":`;
+  const i = html.indexOf(marker);
+  if (i < 0) return null;
+  const start = html.indexOf("[", i);
+  if (start < 0) return null;
+  let depth = 0;
+  let inStr = false;
+  let esc = false;
+  for (let k = start; k < html.length; k++) {
+    const ch = html[k];
+    if (inStr) {
+      if (esc) esc = false;
+      else if (ch === "\\") esc = true;
+      else if (ch === '"') inStr = false;
+      continue;
+    }
+    if (ch === '"') inStr = true;
+    else if (ch === "[") depth++;
+    else if (ch === "]") {
+      depth--;
+      if (depth === 0) {
         try {
-          return JSON.parse(match[1]);
+          return JSON.parse(html.slice(start, k + 1));
         } catch {
-          continue;
-        }
-      }
-
-      // For embedded JSON — bracket-match to find the closing ]
-      const startIdx = match.index + match[0].length - 1; // position of [
-      let depth = 0;
-      let endIdx = startIdx;
-      for (let i = startIdx; i < html.length && i < startIdx + 50000; i++) {
-        if (html[i] === "[") depth++;
-        else if (html[i] === "]") {
-          depth--;
-          if (depth === 0) {
-            endIdx = i;
-            break;
-          }
-        }
-      }
-      if (endIdx > startIdx) {
-        try {
-          return JSON.parse(html.slice(startIdx, endIdx + 1));
-        } catch {
-          continue;
+          return null;
         }
       }
     }
   }
-
-  return [];
+  return null;
 }
 
-function toOpportunity(e: MLHEvent): Opportunity {
-  const isOnline =
-    e.location?.toLowerCase().includes("digital") ||
-    e.location?.toLowerCase().includes("online") ||
-    e.is_hybrid;
-
-  return {
-    id: `mlh:${slugify(e.name)}`,
-    source: META.id,
-    sourceLabel: META.label,
-    sourceUrl: e.url ?? "https://mlh.com/seasons/2026/events",
+function normalize(e: MlhEvent): Opportunity | null {
+  if (!e.name) return null;
+  const digital = e.formatType === "digital" || /everywhere|worldwide|online|digital/i.test(e.location ?? "");
+  const sourceUrl = e.websiteUrl || (e.url ? `https://mlh.com${e.url}` : SEASON_URL);
+  return buildOpportunity("mlh", "MLH", {
     category: "hackathon",
-    title: e.name,
+    title: e.name.trim(),
     organization: "Major League Hacking",
-    imageUrl: e.background_url ?? e.image_url,
-    logoUrl: e.logo_url,
-    location: e.location,
-    isRemote: isOnline,
-    tags: normalizeTags(e.themes ?? []),
-    deadline: parseDate(e.end_date),
-    startDate: parseDate(e.start_date),
-    lastVerified: new Date().toISOString(),
-  };
+    sourceUrl,
+    imageUrl: e.backgroundUrl,
+    logoUrl: e.logoUrl,
+    location: digital ? "Online" : e.location,
+    isRemote: digital || undefined,
+    startDate: toISO(e.startsAt),
+    deadline: toISO(e.startsAt), // you register before it begins
+    summary: [e.location, e.dateRange].filter(Boolean).join(" · ") || undefined,
+    tags: buildTags({ text: e.name, limit: 6 }),
+  });
 }
 
-function slugify(s: string): string {
-  return s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
-}
+export const mlhAdapter: SourceAdapter = {
+  meta: {
+    id: "mlh",
+    label: "MLH",
+    category: "hackathon",
+    homepage: "https://mlh.com",
+    tier: "amber",
+  },
+  async fetch(): Promise<Opportunity[]> {
+    const html = await fetchText(SEASON_URL, { ua: BROWSER_UA, timeoutMs: 12_000 });
+    const events = (extractJsonArray(html, "upcomingEvents") ?? []) as MlhEvent[];
+    const out: Opportunity[] = [];
+    for (const e of events) {
+      const o = normalize(e);
+      if (o) out.push(o);
+    }
+    return out;
+  },
+};

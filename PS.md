@@ -1,1 +1,0 @@
-Track 4 — Opportunity Radar Students miss internships, scholarships, and competitions not from lack of interest but because discovery is fragmented. Build a personalised feed that aggregates opportunities, filters by profile, and sends deadline nudges that actually land.

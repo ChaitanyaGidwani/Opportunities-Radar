@@ -1,65 +1,61 @@
-// ── Codeforces adapter — competition ──
-// GET https://codeforces.com/api/contest.list?gym=false (phase BEFORE)
-
 import type { Opportunity, SourceAdapter } from "../types";
+import { buildOpportunity, fetchJson } from "./_shared";
 
-const META = {
-  id: "codeforces",
-  label: "Codeforces",
-  category: "competition" as const,
-  homepage: "https://codeforces.com",
-  tier: "green" as const,
-};
-
+// Codeforces official API — documented, zero-auth, rate limit 1 req / 2s.
+// GET https://codeforces.com/api/contest.list?gym=false
 interface CFContest {
   id: number;
   name: string;
-  type: string;
-  phase: string;
+  type: string; // CF | ICPC
+  phase: string; // BEFORE = upcoming
+  durationSeconds: number;
   startTimeSeconds?: number;
-  durationSeconds?: number;
+}
+interface CFResponse {
+  status: string; // "OK"
+  result: CFContest[];
+}
+
+function normalize(c: CFContest): Opportunity | null {
+  if (c.phase !== "BEFORE" || !c.startTimeSeconds) return null;
+  const startMs = c.startTimeSeconds * 1000;
+  const start = new Date(startMs).toISOString();
+  const url = `https://codeforces.com/contests/${c.id}`;
+  const hours = Math.round(c.durationSeconds / 3600);
+
+  return buildOpportunity("codeforces", "Codeforces", {
+    category: "competition",
+    title: c.name.trim(),
+    organization: "Codeforces",
+    sourceUrl: url,
+    summary: `Competitive programming round · ${hours ? `${hours}h` : "timed"} · register before it begins`,
+    isRemote: true,
+    location: "Online",
+    // For a contest you must register before it starts, so the start time IS the deadline.
+    deadline: start,
+    startDate: start,
+    tags: ["competitive-programming", "c-cpp"],
+  });
 }
 
 export const codeforcesAdapter: SourceAdapter = {
-  meta: META,
-  async fetch() {
-    const res = await fetch("https://codeforces.com/api/contest.list?gym=false", {
-      headers: { "User-Agent": "Argus/1.0 (student-opportunity-aggregator)" },
-      signal: AbortSignal.timeout(15000),
+  meta: {
+    id: "codeforces",
+    label: "Codeforces",
+    category: "competition",
+    homepage: "https://codeforces.com",
+    tier: "green",
+  },
+  async fetch(): Promise<Opportunity[]> {
+    const data = await fetchJson<CFResponse>("https://codeforces.com/api/contest.list?gym=false", {
+      timeoutMs: 12_000,
     });
-    if (!res.ok) throw new Error(`Codeforces API ${res.status}`);
-    const data = await res.json();
-
-    if (data.status !== "OK") throw new Error("Codeforces API error");
-
-    const upcoming = (data.result as CFContest[]).filter(
-      (c) => c.phase === "BEFORE"
-    );
-
-    return upcoming.map(toOpportunity);
+    if (data.status !== "OK" || !Array.isArray(data.result)) return [];
+    const out: Opportunity[] = [];
+    for (const c of data.result) {
+      const o = normalize(c);
+      if (o) out.push(o);
+    }
+    return out;
   },
 };
-
-function toOpportunity(c: CFContest): Opportunity {
-  const startDate = c.startTimeSeconds
-    ? new Date(c.startTimeSeconds * 1000).toISOString()
-    : undefined;
-
-  return {
-    id: `codeforces:${c.id}`,
-    source: META.id,
-    sourceLabel: META.label,
-    sourceUrl: `https://codeforces.com/contest/${c.id}`,
-    category: "competition",
-    title: c.name,
-    organization: "Codeforces",
-    logoUrl: "https://icons.duckduckgo.com/ip3/codeforces.com.ico",
-    location: "Online",
-    isRemote: true,
-    tags: ["competitive-programming", "problem-solving", "cpp"],
-    // Start time IS the act-by deadline for CP contests
-    deadline: startDate,
-    startDate,
-    lastVerified: new Date().toISOString(),
-  };
-}

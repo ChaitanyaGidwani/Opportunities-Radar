@@ -1,86 +1,70 @@
-// ── Kaggle adapter — competition (env-gated) ──
-// Only active when KAGGLE_USERNAME and KAGGLE_KEY are set
-
 import type { Opportunity, SourceAdapter } from "../types";
-import { parseDate } from "../parse";
-import { normalizeTags } from "../normalize";
+import { buildTags } from "../normalize";
+import { parseMoney, toISO } from "../parse";
+import { buildOpportunity, fetchJson, snippet } from "./_shared";
 
-const META = {
-  id: "kaggle",
-  label: "Kaggle",
-  category: "competition" as const,
-  homepage: "https://www.kaggle.com",
-  tier: "amber" as const,
-};
-
-interface KaggleCompetition {
-  ref: string;
-  title: string;
-  url: string;
-  deadline?: string;
+// Kaggle competitions API — free token from kaggle.com → Account → "Create New API Token"
+// (the kaggle.json gives `username` + `key`). HTTP Basic auth. Env-gated.
+// GET https://www.kaggle.com/api/v1/competitions/list?page=N
+interface KaggleComp {
+  ref?: string;
+  title?: string;
+  url?: string;
   description?: string;
+  deadline?: string;
   category?: string;
   reward?: string;
-  tags?: { name: string }[];
-  totalTeams?: number;
   organizationName?: string;
+  teamCount?: number;
 }
 
 export const kaggleAdapter: SourceAdapter = {
-  meta: META,
-  async fetch() {
-    const username = process.env.KAGGLE_USERNAME;
+  meta: {
+    id: "kaggle",
+    label: "Kaggle",
+    category: "competition",
+    homepage: "https://www.kaggle.com",
+    tier: "green",
+  },
+  async fetch(): Promise<Opportunity[]> {
+    const user = process.env.KAGGLE_USERNAME;
     const key = process.env.KAGGLE_KEY;
-    if (!username || !key) return [];
+    if (!user || !key) throw new Error("Not configured — set KAGGLE_USERNAME & KAGGLE_KEY in .env.local");
 
-    const auth = Buffer.from(`${username}:${key}`).toString("base64");
-    const res = await fetch(
-      "https://www.kaggle.com/api/v1/competitions/list",
-      {
-        headers: {
-          Authorization: `Basic ${auth}`,
-          "User-Agent": "Argus/1.0",
-        },
-        signal: AbortSignal.timeout(15000),
+    const auth = Buffer.from(`${user}:${key}`).toString("base64");
+    const out: Opportunity[] = [];
+    for (let page = 1; page <= 2; page++) {
+      const data = await fetchJson<KaggleComp[]>(`https://www.kaggle.com/api/v1/competitions/list?page=${page}`, {
+        headers: { Authorization: `Basic ${auth}` },
+        timeoutMs: 12_000,
+      });
+      if (!Array.isArray(data) || data.length === 0) break;
+      for (const c of data) {
+        if (!c.title) continue;
+        const url = c.url
+          ? c.url.startsWith("http")
+            ? c.url
+            : `https://www.kaggle.com${c.url}`
+          : `https://www.kaggle.com/competitions/${c.ref ?? ""}`;
+        const money = c.reward ? parseMoney(c.reward) : undefined;
+        out.push(
+          buildOpportunity("kaggle", "Kaggle", {
+            category: "competition",
+            title: c.title.trim(),
+            organization: c.organizationName || "Kaggle",
+            sourceUrl: url,
+            summary: snippet(c.description),
+            isRemote: true,
+            location: "Online",
+            deadline: toISO(c.deadline),
+            tags: buildTags({ explicit: ["machine-learning", "data-science", "python"], text: c.title, limit: 8 }),
+            prizeAmount: money?.max && money.max > 0 ? money.max : undefined,
+            currency: money?.currency ?? "USD",
+            popularity: c.teamCount,
+          }),
+        );
       }
-    );
-    if (!res.ok) throw new Error(`Kaggle API ${res.status}`);
-    const data: KaggleCompetition[] = await res.json();
-
-    return data.map(toOpportunity);
+    }
+    return out;
   },
 };
-
-function toOpportunity(c: KaggleCompetition): Opportunity {
-  let prizeAmount: number | undefined;
-  if (c.reward) {
-    const cleaned = c.reward.replace(/[^0-9]/g, "");
-    const num = parseInt(cleaned, 10);
-    if (!isNaN(num)) prizeAmount = num;
-  }
-
-  return {
-    id: `kaggle:${c.ref}`,
-    source: META.id,
-    sourceLabel: META.label,
-    sourceUrl: c.url?.startsWith("http")
-      ? c.url
-      : `https://www.kaggle.com/competitions/${c.ref}`,
-    category: "competition",
-    title: c.title,
-    organization: c.organizationName ?? "Kaggle",
-    summary: c.description,
-    location: "Online",
-    isRemote: true,
-    tags: normalizeTags([
-      ...(c.tags ?? []).map((t) => t.name),
-      "data-analysis",
-      "machine-learning",
-    ]),
-    deadline: parseDate(c.deadline),
-    prizeAmount,
-    currency: "USD",
-    popularity: c.totalTeams,
-    lastVerified: new Date().toISOString(),
-  };
-}

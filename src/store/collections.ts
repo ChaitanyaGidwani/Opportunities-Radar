@@ -6,33 +6,36 @@ import { persist } from "zustand/middleware";
 interface CollectionsState {
   saved: string[];
   applied: string[];
-}
-
-interface CollectionsActions {
-  toggleSave: (id: string) => void;
-  markApplied: (id: string) => void;
+  hydrated: boolean;
+  toggleSaved: (id: string) => void;
   isSaved: (id: string) => boolean;
+  setApplied: (id: string, value: boolean) => void;
+  isApplied: (id: string) => boolean;
+  _setHydrated: () => void;
 }
 
-export const useCollectionsStore = create<
-  CollectionsState & CollectionsActions
->()(
+export const useCollections = create<CollectionsState>()(
   persist(
     (set, get) => ({
       saved: [],
       applied: [],
-      toggleSave: (id) =>
+      hydrated: false,
+      toggleSaved: (id) =>
         set((s) => ({
-          saved: s.saved.includes(id)
-            ? s.saved.filter((x) => x !== id)
-            : [...s.saved, id],
-        })),
-      markApplied: (id) =>
-        set((s) => ({
-          applied: s.applied.includes(id) ? s.applied : [...s.applied, id],
+          saved: s.saved.includes(id) ? s.saved.filter((x) => x !== id) : [id, ...s.saved],
         })),
       isSaved: (id) => get().saved.includes(id),
+      setApplied: (id, value) =>
+        set((s) => ({
+          applied: value ? [...new Set([id, ...s.applied])] : s.applied.filter((x) => x !== id),
+        })),
+      isApplied: (id) => get().applied.includes(id),
+      _setHydrated: () => set({ hydrated: true }),
     }),
-    { name: "argus-collections" }
-  )
+    {
+      name: "or-collections",
+      partialize: (s) => ({ saved: s.saved, applied: s.applied }),
+      onRehydrateStorage: () => (state) => state?._setHydrated(),
+    },
+  ),
 );

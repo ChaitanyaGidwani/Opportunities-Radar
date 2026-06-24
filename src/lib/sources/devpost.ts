@@ -1,104 +1,88 @@
-// ── Devpost adapter — hackathon ──
-// GET https://devpost.com/api/hackathons?status[]=open&page=N
-
 import type { Opportunity, SourceAdapter } from "../types";
-import { parseDate } from "../parse";
-import { normalizeTags } from "../normalize";
+import { buildTags } from "../normalize";
+import { parseMoney, parseRangeEnd, parseRangeStart } from "../parse";
+import { BOT_UA, buildOpportunity, fetchJson, snippet } from "./_shared";
 
-const META = {
-  id: "devpost",
-  label: "Devpost",
-  category: "hackathon" as const,
-  homepage: "https://devpost.com",
-  tier: "green" as const,
-};
-
+// Devpost public JSON — verified live 2026-06-22, zero-auth.
+// GET https://devpost.com/api/hackathons?status[]=open&page=N  → ~9 items/page.
+interface DevpostTheme {
+  id: number;
+  name: string;
+}
 interface DevpostHackathon {
   id: number;
   title: string;
   url: string;
+  submission_period_dates: string; // "May 19 - Aug 17, 2026"
+  prize_amount: string; // "$<span data-currency-value>2,000,000</span>"
+  time_left_to_submission: string;
+  open_state: string; // "open"
+  organization_name: string;
+  registrations_count: number;
+  displayed_location?: { icon?: string; location?: string };
+  themes?: DevpostTheme[];
   thumbnail_url?: string;
-  organization_name?: string;
-  submission_period_dates?: string;
-  themes?: { name: string }[];
-  prize_amount?: string;
-  registrations_count?: number;
-  displayed_location?: { location?: string };
-  open_state?: string;
-  time_left_to_submission?: string;
+}
+interface DevpostResponse {
+  hackathons: DevpostHackathon[];
+  meta?: { total_count?: number; per_page?: number };
 }
 
-async function fetchPage(page: number): Promise<DevpostHackathon[]> {
-  const url = `https://devpost.com/api/hackathons?status[]=open&page=${page}`;
-  const res = await fetch(url, {
-    headers: { "User-Agent": "Argus/1.0 (student-opportunity-aggregator)" },
-    signal: AbortSignal.timeout(15000),
-  });
-  if (!res.ok) throw new Error(`Devpost API ${res.status}`);
-  const data = await res.json();
-  return data.hackathons ?? [];
-}
+const MAX_PAGES = 4;
 
-function toOpportunity(h: DevpostHackathon): Opportunity {
-  const imgUrl = h.thumbnail_url
-    ? h.thumbnail_url.startsWith("//")
-      ? `https:${h.thumbnail_url}`
-      : h.thumbnail_url
-    : undefined;
+function normalize(h: DevpostHackathon): Opportunity | null {
+  if (!h.url || !h.title) return null;
+  const loc = h.displayed_location?.location;
+  const isRemote = !!loc && /online|virtual|anywhere/i.test(loc);
+  const prizeText = h.prize_amount ? h.prize_amount.replace(/<[^>]*>/g, "") : undefined;
+  const money = parseMoney(prizeText);
+  const themeNames = (h.themes ?? []).map((t) => t.name);
 
-  // Parse deadline from submission_period_dates (e.g. "Oct 01 - Nov 30, 2026")
-  let deadline: string | undefined;
-  if (h.submission_period_dates) {
-    const parts = h.submission_period_dates.split(/\s*[-–]\s*/);
-    if (parts.length >= 2) {
-      deadline = parseDate(parts[parts.length - 1]);
-    }
-  }
-
-  // Parse prize
-  let prizeAmount: number | undefined;
-  if (h.prize_amount) {
-    const cleaned = h.prize_amount.replace(/[^0-9.]/g, "");
-    const num = parseFloat(cleaned);
-    if (!isNaN(num)) prizeAmount = num;
-  }
-
-  const rawTags = (h.themes ?? []).map((t) => t.name);
-
-  return {
-    id: `devpost:${h.id}`,
-    source: META.id,
-    sourceLabel: META.label,
-    sourceUrl: h.url,
+  return buildOpportunity("devpost", "Devpost", {
     category: "hackathon",
-    title: h.title,
-    organization: h.organization_name,
-    imageUrl: imgUrl,
-    location: h.displayed_location?.location,
-    tags: normalizeTags(rawTags),
-    deadline,
-    prizeAmount,
-    currency: "USD",
+    title: h.title.trim(),
+    organization: h.organization_name?.trim(),
+    sourceUrl: h.url,
+    summary: snippet(
+      [themeNames.join(", "), loc, h.time_left_to_submission].filter(Boolean).join(" · "),
+    ),
+    location: loc,
+    isRemote,
+    imageUrl: h.thumbnail_url
+      ? h.thumbnail_url.startsWith("//")
+        ? `https:${h.thumbnail_url}`
+        : h.thumbnail_url
+      : undefined,
+    deadline: parseRangeEnd(h.submission_period_dates),
+    startDate: parseRangeStart(h.submission_period_dates),
+    tags: buildTags({ explicit: themeNames, text: h.title, limit: 8 }),
+    prizeAmount: money?.max,
+    currency: money?.currency ?? "USD",
     popularity: h.registrations_count,
-    lastVerified: new Date().toISOString(),
-  };
+  });
 }
 
 export const devpostAdapter: SourceAdapter = {
-  meta: META,
-  async fetch() {
-    const results: Opportunity[] = [];
-    // Fetch up to 3 pages
-    for (let page = 1; page <= 3; page++) {
-      try {
-        const hackathons = await fetchPage(page);
-        if (hackathons.length === 0) break;
-        results.push(...hackathons.map(toOpportunity));
-      } catch (e) {
-        if (page === 1) throw e; // First page failure is fatal
-        break; // Later pages can fail silently
+  meta: {
+    id: "devpost",
+    label: "Devpost",
+    category: "hackathon",
+    homepage: "https://devpost.com",
+    tier: "green",
+  },
+  async fetch(): Promise<Opportunity[]> {
+    const out: Opportunity[] = [];
+    for (let page = 1; page <= MAX_PAGES; page++) {
+      const url = `https://devpost.com/api/hackathons?status[]=open&page=${page}`;
+      const data = await fetchJson<DevpostResponse>(url, { ua: BOT_UA, timeoutMs: 12_000 });
+      const items = data.hackathons ?? [];
+      if (!items.length) break;
+      for (const h of items) {
+        const o = normalize(h);
+        if (o) out.push(o);
       }
+      if (items.length < 6) break; // last page
     }
-    return results;
+    return out;
   },
 };

@@ -2,56 +2,40 @@
 
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
-import type { Category } from "@/lib/types";
+import type { Profile } from "@/lib/types";
 
-export interface ProfileState {
-  branch: string;
-  year: number;
-  interests: Category[];
-  skills: string[];
-  cgpa?: number;
-  state?: string;
-  location?: string;
-  onboarded: boolean;
-  hydrated: boolean;
-}
-
-interface ProfileActions {
-  setProfile: (data: Partial<ProfileState>) => void;
-  completeOnboarding: (data: {
-    branch: string;
-    year: number;
-    interests: Category[];
-    skills: string[];
-  }) => void;
-  reset: () => void;
-  setHydrated: (v: boolean) => void;
-}
-
-const initialState: ProfileState = {
-  branch: "",
-  year: 2026,
+export const EMPTY_PROFILE: Profile = {
   interests: [],
   skills: [],
   onboarded: false,
-  hydrated: false,
 };
 
-export const useProfileStore = create<ProfileState & ProfileActions>()(
+interface ProfileState {
+  profile: Profile;
+  hydrated: boolean;
+  setProfile: (patch: Partial<Profile>) => void;
+  completeOnboarding: (p: Partial<Profile>) => void;
+  reset: () => void;
+  _setHydrated: () => void;
+}
+
+export const useProfile = create<ProfileState>()(
   persist(
     (set) => ({
-      ...initialState,
-      setProfile: (data) => set((s) => ({ ...s, ...data })),
-      completeOnboarding: (data) =>
-        set((s) => ({ ...s, ...data, onboarded: true })),
-      reset: () => set(initialState),
-      setHydrated: (v) => set({ hydrated: v }),
+      profile: EMPTY_PROFILE,
+      hydrated: false,
+      setProfile: (patch) => set((s) => ({ profile: { ...s.profile, ...patch } })),
+      completeOnboarding: (p) =>
+        set((s) => ({
+          profile: { ...s.profile, ...p, onboarded: true, createdAt: s.profile.createdAt ?? new Date().toISOString() },
+        })),
+      reset: () => set({ profile: EMPTY_PROFILE }),
+      _setHydrated: () => set({ hydrated: true }),
     }),
     {
-      name: "argus-profile",
-      onRehydrateStorage: () => (state) => {
-        state?.setHydrated(true);
-      },
-    }
-  )
+      name: "or-profile",
+      partialize: (s) => ({ profile: s.profile }),
+      onRehydrateStorage: () => (state) => state?._setHydrated(),
+    },
+  ),
 );

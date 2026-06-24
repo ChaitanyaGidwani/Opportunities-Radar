@@ -1,282 +1,312 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { ArrowLeft, Search, SlidersHorizontal, Inbox, X } from "lucide-react";
-import type { Opportunity, Category } from "@/lib/types";
-import { CATEGORY_META } from "@/components/category-meta";
-import { OpportunityCard } from "@/components/feed/opportunity-card";
-import { useCollectionsStore } from "@/store/collections";
+import { Filter, Activity, Inbox, AlertTriangle, CheckCircle2, XCircle, Star, X, ArrowRight, ArrowLeft } from "lucide-react";
+import type { Category, ScoredOpportunity, SourceRun } from "@/lib/types";
+import type { Facets, FilterState, SortKey } from "@/lib/feed";
+import { useProfile } from "@/store/profile";
+import { OpportunityCard } from "./opportunity-card";
+import { OpportunityDetail } from "./opportunity-detail";
+import { FilterBar } from "./filter-bar";
+import { CATEGORY_ICON, CATEGORY_LABEL } from "./category-icon";
+import { Skeleton } from "../ui/primitives";
+import { Button } from "../ui/button";
+import { cn } from "@/lib/utils";
 
-interface Props {
-  category: Category;
-  opportunities: Opportunity[];
+interface FeedResponse {
+  items: ScoredOpportunity[];
+  facets: Facets;
+  broadened: boolean;
+  total: number;
+  eligibleTotal: number;
+  updatedAt: string;
+  runs: SourceRun[];
 }
 
-type SortMode = "closing" | "newest" | "popular";
-type DeadlineWindow = "all" | "24h" | "3d" | "7d" | "30d";
+export function FeedClient({ initialCategory }: { initialCategory?: Category } = {}) {
+  const profile = useProfile((s) => s.profile);
+  const hydrated = useProfile((s) => s.hydrated);
 
-export function FeedClient({ category, opportunities }: Props) {
-  const { saved, toggleSave } = useCollectionsStore();
-  const meta = CATEGORY_META[category];
-  const CatIcon = meta.icon;
+  const [filter, setFilter] = useState<FilterState>(initialCategory ? { categories: [initialCategory] } : {});
+  const [sort, setSort] = useState<SortKey>("closing");
+  const [data, setData] = useState<FeedResponse | null>(null);
+  const [status, setStatus] = useState<"loading" | "refetching" | "idle" | "error">("loading");
+  const [rescanning, setRescanning] = useState(false);
+  const [selected, setSelected] = useState<ScoredOpportunity | null>(null);
+  const [showPersonalize, setShowPersonalize] = useState(true);
+  const hasData = useRef(false);
 
-  const [query, setQuery] = useState("");
-  const [sort, setSort] = useState<SortMode>("closing");
-  const [deadlineWindow, setDeadlineWindow] = useState<DeadlineWindow>("all");
-  const [showFilters, setShowFilters] = useState(false);
-  const [selectedTags, setSelectedTags] = useState<string[]>([]);
-
-  // Compute top tags from this category's opportunities
-  const topTags = useMemo(() => {
-    const tagCounts: Record<string, number> = {};
-    for (const o of opportunities) {
-      for (const t of o.tags) {
-        tagCounts[t] = (tagCounts[t] ?? 0) + 1;
+  useEffect(() => {
+    if (!hydrated) return;
+    let cancelled = false;
+    const run = async () => {
+      setStatus(hasData.current ? "refetching" : "loading");
+      try {
+        const res = await fetch("/api/feed", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ profile, filter, sort, scope: "all" }),
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const json = (await res.json()) as FeedResponse;
+        if (!cancelled) {
+          setData(json);
+          hasData.current = true;
+          setStatus("idle");
+        }
+      } catch {
+        if (!cancelled) setStatus("error");
       }
+    };
+    const t = setTimeout(run, 200);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [hydrated, profile, filter, sort]);
+
+  const rescan = async () => {
+    setRescanning(true);
+    try {
+      await fetch("/api/ingest", { method: "POST" });
+      const res = await fetch("/api/feed", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ profile, filter, sort, scope: "all" }),
+      });
+      if (res.ok) setData((await res.json()) as FeedResponse);
+    } finally {
+      setRescanning(false);
     }
-    return Object.entries(tagCounts)
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 12)
-      .map(([tag]) => tag);
-  }, [opportunities]);
-
-  const filtered = useMemo(() => {
-    let result = opportunities.filter(
-      (o) => o.category === category && o.deadline && new Date(o.deadline).getTime() > Date.now()
-    );
-
-    // Search
-    if (query) {
-      const q = query.toLowerCase();
-      result = result.filter(
-        (o) =>
-          o.title.toLowerCase().includes(q) ||
-          (o.organization ?? "").toLowerCase().includes(q) ||
-          o.tags.some((t) => t.includes(q))
-      );
-    }
-
-    // Deadline window
-    if (deadlineWindow !== "all") {
-      const windowMs: Record<string, number> = {
-        "24h": 86400000,
-        "3d": 3 * 86400000,
-        "7d": 7 * 86400000,
-        "30d": 30 * 86400000,
-      };
-      const maxMs = windowMs[deadlineWindow];
-      result = result.filter(
-        (o) => o.deadline && new Date(o.deadline).getTime() - Date.now() < maxMs
-      );
-    }
-
-    // Tags filter
-    if (selectedTags.length > 0) {
-      result = result.filter((o) =>
-        selectedTags.some((t) => o.tags.includes(t))
-      );
-    }
-
-    // Sort
-    if (sort === "closing") {
-      result.sort(
-        (a, b) => new Date(a.deadline!).getTime() - new Date(b.deadline!).getTime()
-      );
-    } else if (sort === "newest") {
-      result.sort(
-        (a, b) => new Date(b.postedAt ?? 0).getTime() - new Date(a.postedAt ?? 0).getTime()
-      );
-    } else {
-      result.sort((a, b) => (b.popularity ?? 0) - (a.popularity ?? 0));
-    }
-
-    return result;
-  }, [opportunities, category, query, sort, deadlineWindow, selectedTags]);
-
-  const handleOpen = (id: string) => {
-    window.location.href = `/opportunity/${id}`;
   };
 
-  const activeFilterCount =
-    (deadlineWindow !== "all" ? 1 : 0) + selectedTags.length;
-
   return (
-    <div className="py-4 px-4 md:px-6">
+    <div className="px-4 py-5 sm:px-6 sm:py-6">
       {/* Header */}
-      <div className="flex items-center gap-3 mb-6">
-        <Link
-          href="/feed"
-          className="w-9 h-9 rounded-full flex items-center justify-center border border-line hover:bg-base transition-colors"
-        >
-          <ArrowLeft className="w-4 h-4 text-ink-2" />
-        </Link>
-        <div
-          className="w-10 h-10 rounded-xl flex items-center justify-center"
-          style={{ background: meta.bgHex }}
-        >
-          <CatIcon className="w-5 h-5" style={{ color: meta.hex }} />
-        </div>
-        <div>
-          <h1 className="text-xl font-bold text-ink">{meta.labelPlural}</h1>
-          <p className="text-xs text-ink-3 tabular-nums">{filtered.length} live</p>
-        </div>
+      <div className="mb-5">
+        {initialCategory ? (
+          (() => {
+            const CatIcon = CATEGORY_ICON[initialCategory];
+            const catCount = data?.facets.category[initialCategory];
+            return (
+              <>
+                <Link href="/feed" className="mb-1.5 inline-flex items-center gap-1 text-[12px] text-ink-3 hover:text-ink-2">
+                  <ArrowLeft size={13} /> All categories
+                </Link>
+                <h1 className="flex items-center gap-2 text-2xl font-semibold tracking-tight text-ink">
+                  <CatIcon size={22} className="text-signal-600" />
+                  {CATEGORY_LABEL[initialCategory]}s
+                </h1>
+                <p className="mt-1 text-sm text-ink-2">
+                  {catCount != null ? (
+                    <>
+                      <span className="font-semibold text-ink">{catCount.toLocaleString("en-IN")}</span> live · aggregated
+                      from every source
+                    </>
+                  ) : (
+                    "Loading…"
+                  )}
+                </p>
+              </>
+            );
+          })()
+        ) : (
+          <>
+            <h1 className="text-2xl font-semibold tracking-tight text-ink">Explore opportunities</h1>
+            <p className="mt-1 text-sm text-ink-2">
+              {data ? (
+                <>
+                  <span className="font-semibold text-ink">{data.eligibleTotal.toLocaleString("en-IN")}</span> live across
+                  internships, scholarships, competitions &amp; hackathons
+                  {data.facets.closingThisWeek > 0 && (
+                    <>
+                      {" · "}
+                      <span className="font-medium text-amber">{data.facets.closingThisWeek}</span> closing this week
+                    </>
+                  )}
+                </>
+              ) : (
+                "Internships · scholarships · competitions · hackathons — aggregated live"
+              )}
+            </p>
+          </>
+        )}
       </div>
 
-      {/* Search + Sort + Filters */}
-      <div className="flex flex-col gap-3 mb-5">
-        <div className="flex items-center gap-2">
-          <div className="flex-1 flex items-center gap-2 px-3 py-2.5 rounded-[var(--radius-control)] bg-base border border-line">
-            <Search className="w-4 h-4 text-ink-3" />
-            <input
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder={`Search ${meta.labelPlural.toLowerCase()}...`}
-              className="flex-1 bg-transparent outline-none text-sm placeholder:text-ink-3 text-ink"
-            />
+      {/* Personalise banner (optional — never a gate) */}
+      {hydrated && !profile.onboarded && showPersonalize && (
+        <div className="mb-5 flex items-center gap-3 rounded-xl border border-signal-500/30 bg-signal-500/[0.06] p-3.5 sm:p-4">
+          <span className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-signal-500/15 text-signal-600">
+            <Star size={18} />
+          </span>
+          <div className="min-w-0 flex-1">
+            <p className="text-[14px] font-semibold text-ink">Personalise your feed</p>
+            <p className="text-[12.5px] text-ink-2">Add your branch, year & skills so we hide what you can’t apply to and rank the rest. Takes 30 seconds.</p>
           </div>
-
-          {/* Sort */}
-          <select
-            value={sort}
-            onChange={(e) => setSort(e.target.value as SortMode)}
-            className="px-3 py-2.5 rounded-[var(--radius-control)] bg-base border border-line text-xs font-medium text-ink-2 outline-none cursor-pointer"
-          >
-            <option value="closing">Closing first</option>
-            <option value="newest">Newest</option>
-            <option value="popular">Popular</option>
-          </select>
-
-          {/* Filters toggle */}
-          <button
-            onClick={() => setShowFilters(!showFilters)}
-            className="relative px-3 py-2.5 rounded-[var(--radius-control)] bg-base border border-line text-ink-2 hover:bg-surface transition-colors"
-          >
-            <SlidersHorizontal className="w-4 h-4" />
-            {activeFilterCount > 0 && (
-              <span className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-signal-500 text-white text-[9px] font-bold flex items-center justify-center">
-                {activeFilterCount}
-              </span>
-            )}
+          <Link href="/onboarding" className="shrink-0">
+            <Button size="sm">
+              Set up <ArrowRight size={15} />
+            </Button>
+          </Link>
+          <button onClick={() => setShowPersonalize(false)} aria-label="Dismiss" className="grid h-8 w-8 shrink-0 place-items-center rounded-full text-ink-3 hover:bg-elevated">
+            <X size={16} />
           </button>
         </div>
+      )}
 
-        {/* Active filter chips (when collapsed) */}
-        {!showFilters && activeFilterCount > 0 && (
-          <div className="flex items-center gap-2 flex-wrap">
-            {deadlineWindow !== "all" && (
-              <FilterChip
-                label={`Deadline: ${deadlineWindow}`}
-                onRemove={() => setDeadlineWindow("all")}
-              />
-            )}
-            {selectedTags.map((t) => (
-              <FilterChip
-                key={t}
-                label={t}
-                onRemove={() => setSelectedTags((tags) => tags.filter((x) => x !== t))}
-              />
-            ))}
-            <button
-              onClick={() => { setDeadlineWindow("all"); setSelectedTags([]); }}
-              className="text-xs font-medium text-signal-600 hover:underline"
-            >
-              Clear
-            </button>
-          </div>
+      {/* Filters */}
+      <div className="sticky top-14 z-20 -mx-4 border-b border-line bg-base px-4 py-3 sm:mx-0 sm:rounded-2xl sm:border sm:px-4">
+        <FilterBar
+          filter={filter}
+          setFilter={setFilter}
+          sort={sort}
+          setSort={setSort}
+          facets={data?.facets ?? null}
+          onRescan={rescan}
+          rescanning={rescanning}
+          updatedAt={data?.updatedAt}
+          lockedCategory={initialCategory}
+        />
+      </div>
+
+      {/* broadened banner */}
+      {data?.broadened && (
+        <div className="mt-4 flex items-start gap-2 rounded-xl border border-amber/30 bg-amber/[0.06] px-4 py-3 text-[13px] text-amber">
+          <Filter size={16} className="mt-0.5 shrink-0" />
+          <span>
+            Nothing matched your exact filters, so we broadened the search. Adjust your profile or filters to sharpen
+            these results.
+          </span>
+        </div>
+      )}
+
+      {/* refetch progress hairline */}
+      {status === "refetching" && (
+        <div className="mt-4 h-0.5 w-full overflow-hidden rounded-full bg-line">
+          <div className="h-full w-1/3 animate-[sweep_1s_linear_infinite] bg-signal-500" />
+        </div>
+      )}
+
+      {/* Results */}
+      <div className="mt-5">
+        {status === "loading" && !data && <LoadingState />}
+
+        {status === "error" && !data && (
+          <EmptyBox
+            icon={<AlertTriangle className="text-danger" />}
+            title="Lost signal"
+            body="We couldn't reach the live sources. Check your connection and retry."
+            action={<Button onClick={rescan}>Retry scan</Button>}
+          />
         )}
 
-        {/* Expanded Filters panel */}
-        {showFilters && (
-          <div className="panel p-4 space-y-4">
-            <div>
-              <h4 className="text-xs font-semibold text-ink-2 uppercase tracking-wider mb-2">
-                Deadline
-              </h4>
-              <div className="flex flex-wrap gap-2">
-                {(["all", "24h", "3d", "7d", "30d"] as DeadlineWindow[]).map((w) => (
-                  <button
-                    key={w}
-                    onClick={() => setDeadlineWindow(w)}
-                    className={`px-3 py-1.5 rounded-full text-xs font-medium border transition-colors ${
-                      deadlineWindow === w
-                        ? "bg-signal-500 text-white border-transparent"
-                        : "bg-surface border-line text-ink-2 hover:bg-base"
-                    }`}
-                  >
-                    {w === "all" ? "Any" : w}
-                  </button>
-                ))}
-              </div>
-            </div>
+        {data && data.items.length === 0 && status !== "loading" && (
+          <EmptyBox
+            icon={<Inbox className="text-ink-3" />}
+            title="No signals in range"
+            body="No opportunities match these filters right now. Try widening the deadline window or clearing filters."
+            action={
+              <Button variant="secondary" onClick={() => setFilter({})}>
+                Clear filters
+              </Button>
+            }
+          />
+        )}
 
-            {topTags.length > 0 && (
-              <div>
-                <h4 className="text-xs font-semibold text-ink-2 uppercase tracking-wider mb-2">
-                  Skills & themes
-                </h4>
-                <div className="flex flex-wrap gap-2">
-                  {topTags.map((tag) => (
-                    <button
-                      key={tag}
-                      onClick={() =>
-                        setSelectedTags((tags) =>
-                          tags.includes(tag)
-                            ? tags.filter((t) => t !== tag)
-                            : [...tags, tag]
-                        )
-                      }
-                      className={`px-3 py-1.5 rounded-full text-xs font-medium border transition-colors ${
-                        selectedTags.includes(tag)
-                          ? "bg-signal-500 text-white border-transparent"
-                          : "bg-surface border-line text-ink-2 hover:bg-base"
-                      }`}
-                    >
-                      {tag}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
+        {data && data.items.length > 0 && (
+          <>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              {data.items.map((s, i) => (
+                <OpportunityCard key={s.opportunity.id} scored={s} onOpen={setSelected} index={i} />
+              ))}
+            </div>
+            <SourceHealth runs={data.runs} />
+          </>
         )}
       </div>
 
-      {/* Results grid */}
-      {filtered.length === 0 ? (
-        <div className="flex flex-col items-center justify-center py-20 text-center">
-          <div className="w-16 h-16 rounded-full bg-base flex items-center justify-center mb-4">
-            <Inbox className="w-8 h-8 text-ink-3" />
-          </div>
-          <h3 className="text-base font-bold text-ink mb-1">No opportunities found</h3>
-          <p className="text-sm text-ink-3 max-w-xs">
-            Try adjusting your filters or search for something else.
-          </p>
-        </div>
-      ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-          {filtered.map((opp) => (
-            <OpportunityCard
-              key={opp.id}
-              opp={opp}
-              saved={saved.includes(opp.id)}
-              onSave={toggleSave}
-              onOpen={handleOpen}
-            />
-          ))}
-        </div>
-      )}
+      <OpportunityDetail scored={selected} onClose={() => setSelected(null)} />
     </div>
   );
 }
 
-function FilterChip({ label, onRemove }: { label: string; onRemove: () => void }) {
+function LoadingState() {
   return (
-    <span className="inline-flex items-center gap-1 text-xs font-medium px-2.5 py-1 rounded-full bg-signal-50 text-signal-600">
-      {label}
-      <button onClick={onRemove} className="hover:text-signal-700">
-        <X className="w-3 h-3" />
+    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+      {Array.from({ length: 6 }).map((_, i) => (
+        <div key={i} className="panel overflow-hidden">
+          <Skeleton className="h-[104px] w-full rounded-none" />
+          <div className="space-y-2.5 p-4">
+            <Skeleton className="h-4 w-24" />
+            <Skeleton className="h-4 w-3/4" />
+            <div className="flex gap-1.5">
+              <Skeleton className="h-5 w-16" />
+              <Skeleton className="h-5 w-16" />
+            </div>
+            <Skeleton className="h-px w-full" />
+            <div className="flex justify-between">
+              <Skeleton className="h-4 w-20" />
+              <Skeleton className="h-4 w-14" />
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function EmptyBox({
+  icon,
+  title,
+  body,
+  action,
+}: {
+  icon: React.ReactNode;
+  title: string;
+  body: string;
+  action?: React.ReactNode;
+}) {
+  return (
+    <div className="flex flex-col items-center gap-3 rounded-2xl border border-dashed border-line-strong px-6 py-16 text-center">
+      <div className="grid h-12 w-12 place-items-center rounded-full bg-elevated [&>svg]:h-6 [&>svg]:w-6">{icon}</div>
+      <h3 className="text-base font-semibold text-ink">{title}</h3>
+      <p className="max-w-sm text-sm text-ink-2">{body}</p>
+      {action}
+    </div>
+  );
+}
+
+function SourceHealth({ runs }: { runs: SourceRun[] }) {
+  const [open, setOpen] = useState(false);
+  if (!runs?.length) return null;
+  const ok = runs.filter((r) => r.ok).length;
+  const total = runs.reduce((n, r) => n + r.count, 0);
+  return (
+    <div className="mt-6 rounded-xl border border-line bg-surface/50 px-4 py-3">
+      <button onClick={() => setOpen((v) => !v)} className="flex w-full items-center gap-2 text-[13px] text-ink-2">
+        <Activity size={15} className="text-signal-500" />
+        <span className="font-medium text-ink">{ok}/{runs.length} sources live</span>
+        <span className="text-ink-3">· {total} listings aggregated</span>
+        <span className="ml-auto text-ink-3">{open ? "Hide" : "Details"}</span>
       </button>
-    </span>
+      {open && (
+        <div className="mt-3 grid grid-cols-2 gap-1.5 sm:grid-cols-3">
+          {runs.map((r) => (
+            <div key={r.id} className="flex items-center gap-1.5 text-[12px]">
+              {r.ok ? (
+                <CheckCircle2 size={13} className="text-success" />
+              ) : (
+                <XCircle size={13} className="text-danger" />
+              )}
+              <span className="text-ink-2">{r.label}</span>
+              <span className={cn("ml-auto font-mono tabular-nums", r.ok ? "text-ink-3" : "text-danger")}>
+                {r.ok ? r.count : "—"}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }

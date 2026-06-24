@@ -1,119 +1,102 @@
-// ── File-based cache for the server-side corpus ──
-// Runs with zero API keys / no database by default.
-// Persists to .cache/corpus.json.
+import { promises as fs } from "node:fs";
+import path from "node:path";
+import type { Opportunity, SourceRun } from "./types";
 
-import "server-only";
-import * as fs from "node:fs";
-import * as path from "node:path";
-import type { Corpus } from "./types";
+// ─────────────────────────────────────────────────────────────────────────────
+// Server-side corpus cache. The frontend NEVER scrapes per request — it reads
+// this cache. A background refresh (triggered on staleness or via /api/ingest)
+// runs the adapters and writes here. If every live source fails we keep serving
+// the last good snapshot (graceful degradation).
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface Corpus {
+  opportunities: Opportunity[];
+  runs: SourceRun[];
+  updatedAt: string;
+}
 
 const CACHE_DIR = path.join(process.cwd(), ".cache");
-const CORPUS_PATH = path.join(CACHE_DIR, "corpus.json");
-const VAPID_PATH = path.join(CACHE_DIR, "vapid.json");
-const SUBS_PATH = path.join(CACHE_DIR, "subscriptions.json");
-const STALE_MS = 30 * 60 * 1000; // 30 minutes
+const CACHE_FILE = path.join(CACHE_DIR, "corpus.json");
 
-function ensureCacheDir() {
-  if (!fs.existsSync(CACHE_DIR)) {
-    fs.mkdirSync(CACHE_DIR, { recursive: true });
-  }
-}
+/** Time-to-live before the corpus is considered stale and a refresh is wanted. */
+export const CORPUS_TTL_MS = 30 * 60 * 1000; // 30 min
 
-// ── Corpus cache ──
+// Module-level in-memory cache survives across requests in a warm server.
+let memory: Corpus | null = null;
+let inflight: Promise<Corpus> | null = null;
 
-/** In-memory corpus snapshot */
-let memoryCorpus: Corpus | null = null;
-
-/** Read corpus from disk */
-export function readCorpusFromDisk(): Corpus | null {
+async function readDisk(): Promise<Corpus | null> {
   try {
-    if (fs.existsSync(CORPUS_PATH)) {
-      const raw = fs.readFileSync(CORPUS_PATH, "utf-8");
-      return JSON.parse(raw) as Corpus;
-    }
-  } catch (e) {
-    console.warn("[store] Failed to read corpus from disk:", e);
-  }
-  return null;
-}
-
-/** Write corpus to disk + memory */
-export function writeCorpus(corpus: Corpus): void {
-  ensureCacheDir();
-  memoryCorpus = corpus;
-  try {
-    fs.writeFileSync(CORPUS_PATH, JSON.stringify(corpus), "utf-8");
-  } catch (e) {
-    console.warn("[store] Failed to write corpus to disk:", e);
-  }
-}
-
-/** Get the in-memory corpus (or load from disk) */
-export function getMemoryCorpus(): Corpus | null {
-  if (memoryCorpus) return memoryCorpus;
-  memoryCorpus = readCorpusFromDisk();
-  return memoryCorpus;
-}
-
-/** Check if the corpus is stale (older than 30 min) */
-export function isCorpusStale(corpus: Corpus | null): boolean {
-  if (!corpus) return true;
-  const age = Date.now() - new Date(corpus.updatedAt).getTime();
-  return age > STALE_MS;
-}
-
-// ── VAPID keys (auto-generated for web push) ──
-
-export interface VapidKeys {
-  publicKey: string;
-  privateKey: string;
-}
-
-export function readVapidKeys(): VapidKeys | null {
-  try {
-    if (fs.existsSync(VAPID_PATH)) {
-      return JSON.parse(fs.readFileSync(VAPID_PATH, "utf-8")) as VapidKeys;
-    }
+    const raw = await fs.readFile(CACHE_FILE, "utf-8");
+    const parsed = JSON.parse(raw) as Corpus;
+    if (parsed && Array.isArray(parsed.opportunities)) return parsed;
+    return null;
   } catch {
-    // ignore
+    return null;
   }
-  return null;
 }
 
-export function writeVapidKeys(keys: VapidKeys): void {
-  ensureCacheDir();
-  fs.writeFileSync(VAPID_PATH, JSON.stringify(keys, null, 2), "utf-8");
-}
-
-// ── Push subscriptions ──
-
-export interface PushSubscriptionRecord {
-  endpoint: string;
-  keys: { p256dh: string; auth: string };
-}
-
-export function readSubscriptions(): PushSubscriptionRecord[] {
+async function writeDisk(corpus: Corpus): Promise<void> {
   try {
-    if (fs.existsSync(SUBS_PATH)) {
-      return JSON.parse(fs.readFileSync(SUBS_PATH, "utf-8")) as PushSubscriptionRecord[];
-    }
+    await fs.mkdir(CACHE_DIR, { recursive: true });
+    await fs.writeFile(CACHE_FILE, JSON.stringify(corpus), "utf-8");
   } catch {
-    // ignore
+    // Non-fatal: memory cache still serves the request.
   }
-  return [];
 }
 
-export function writeSubscriptions(subs: PushSubscriptionRecord[]): void {
-  ensureCacheDir();
-  fs.writeFileSync(SUBS_PATH, JSON.stringify(subs, null, 2), "utf-8");
+export function corpusAgeMs(corpus: Corpus | null): number {
+  if (!corpus) return Infinity;
+  const t = new Date(corpus.updatedAt).getTime();
+  return isNaN(t) ? Infinity : Date.now() - t;
 }
 
-export function addSubscription(sub: PushSubscriptionRecord): void {
-  const subs = readSubscriptions();
-  // Dedupe by endpoint
-  const exists = subs.some((s) => s.endpoint === sub.endpoint);
-  if (!exists) {
-    subs.push(sub);
-    writeSubscriptions(subs);
-  }
+export function isFresh(corpus: Corpus | null): boolean {
+  return corpusAgeMs(corpus) < CORPUS_TTL_MS;
+}
+
+/** Read the best available corpus without forcing a refresh. */
+export async function peekCorpus(): Promise<Corpus | null> {
+  if (memory) return memory;
+  const disk = await readDisk();
+  if (disk) memory = disk;
+  return memory;
+}
+
+export async function setCorpus(corpus: Corpus): Promise<Corpus> {
+  memory = corpus;
+  await writeDisk(corpus);
+  return corpus;
+}
+
+/**
+ * Run an aggregation, de-duping a refresh stampede. `producer` returns the
+ * freshly aggregated corpus (the aggregator wires this up). On failure we fall
+ * back to whatever snapshot we already have.
+ */
+export async function refreshCorpus(
+  producer: () => Promise<Corpus>,
+): Promise<Corpus> {
+  if (inflight) return inflight;
+  inflight = (async () => {
+    try {
+      const fresh = await producer();
+      // Never let a transient empty run wipe a good snapshot.
+      if (fresh.opportunities.length === 0) {
+        const prev = await peekCorpus();
+        if (prev && prev.opportunities.length > 0) {
+          return setCorpus({ ...prev, runs: fresh.runs, updatedAt: new Date().toISOString() });
+        }
+      }
+      return setCorpus(fresh);
+    } catch {
+      const prev = await peekCorpus();
+      if (prev) return prev;
+      const empty: Corpus = { opportunities: [], runs: [], updatedAt: new Date().toISOString() };
+      return empty;
+    } finally {
+      inflight = null;
+    }
+  })();
+  return inflight;
 }

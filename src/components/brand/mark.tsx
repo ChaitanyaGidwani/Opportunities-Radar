@@ -1,43 +1,22 @@
-"use client";
+import { cn } from "@/lib/utils";
 
-// ── Brand mark: teal tile + aim arrow (NO radar/scope icons) ──
-
-export function BrandMark({ size = 32 }: { size?: number }) {
+/** Brand mark: a solid rounded tile with an upward "aim" arrow — Argus = goal/aim. */
+export function BrandMark({ size = 28, className }: { size?: number; className?: string }) {
   return (
-    <div
-      className="flex items-center justify-center rounded-lg shrink-0"
-      style={{
-        width: size,
-        height: size,
-        background: "var(--color-signal-500)",
-        boxShadow: "0 2px 8px rgba(0,0,0,0.12)",
-      }}
-    >
-      {/* Upward aim/dart arrow SVG */}
-      <svg
-        width={size * 0.55}
-        height={size * 0.55}
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="white"
-        strokeWidth={2.5}
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      >
-        <path d="M12 19V5" />
-        <path d="M5 12l7-7 7 7" />
-      </svg>
-    </div>
+    <svg viewBox="0 0 32 32" width={size} height={size} className={cn("shrink-0", className)} aria-hidden>
+      <rect width="32" height="32" rx="9" fill="var(--color-signal-500)" />
+      <path d="M16 7.5 L24 23.6 L16 19.3 L8 23.6 Z" fill="white" />
+    </svg>
   );
 }
 
-export function Wordmark() {
+export function Wordmark({ size = 28, className }: { size?: number; className?: string }) {
   return (
-    <span
-      className="font-bold tracking-tight text-lg"
-      style={{ fontFamily: "var(--font-display)", color: "var(--c-ink)" }}
-    >
-      Argus
+    <span className={cn("inline-flex items-center gap-2.5", className)}>
+      <BrandMark size={size} />
+      <span className="font-display font-bold tracking-tight text-ink" style={{ fontSize: size * 0.72 }}>
+        Argus
+      </span>
     </span>
   );
 }

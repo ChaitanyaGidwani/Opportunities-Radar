@@ -1,206 +1,106 @@
 "use client";
 
-import Link from "next/link";
-import { ArrowRight, Activity } from "lucide-react";
-import type { Opportunity, Category } from "@/lib/types";
-import { CATEGORY_META, ALL_CATEGORIES } from "@/components/category-meta";
-import { OpportunityCard } from "@/components/feed/opportunity-card";
-import { useCollectionsStore } from "@/store/collections";
+import { useEffect, useState } from "react";
+import type { ScoredOpportunity } from "@/lib/types";
+import type { Facets } from "@/lib/feed";
+import { useProfile } from "@/store/profile";
+import { CategoryTiles } from "./category-tiles";
+import { Rail } from "../feed/rail";
+import { OpportunityDetail } from "../feed/opportunity-detail";
 
-interface Props {
-  opportunities: Opportunity[];
+interface FeedResp {
+  items: ScoredOpportunity[];
+  facets: Facets;
+  updatedAt: string;
 }
 
-export function DiscoverClient({ opportunities }: Props) {
-  const { saved, toggleSave } = useCollectionsStore();
+const MS = 86_400_000;
 
-  // Compute stats
-  const totalLive = opportunities.length;
-  const closingThisWeek = opportunities.filter((o) => {
-    if (!o.deadline) return false;
-    const ms = new Date(o.deadline).getTime() - Date.now();
-    return ms > 0 && ms < 7 * 86400000;
-  }).length;
+export function DiscoverClient() {
+  const profile = useProfile((s) => s.profile);
+  const hydrated = useProfile((s) => s.hydrated);
+  const [data, setData] = useState<FeedResp | null>(null);
+  const [selected, setSelected] = useState<ScoredOpportunity | null>(null);
+  const [now] = useState(() => Date.now());
 
-  // Category tile counts
-  const categoryCounts: Record<Category, number> = {
-    internship: 0, scholarship: 0, competition: 0, hackathon: 0,
-  };
-  for (const o of opportunities) categoryCounts[o.category]++;
+  useEffect(() => {
+    if (!hydrated) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch("/api/feed", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ profile, sort: "closing", scope: "all" }),
+        });
+        const json = await res.json();
+        if (!cancelled) setData(json);
+      } catch {
+        /* keep skeletons */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [hydrated, profile]);
 
-  // Rails
-  const closingSoon = [...opportunities]
-    .filter((o) => o.deadline && new Date(o.deadline).getTime() > Date.now())
-    .sort((a, b) => new Date(a.deadline!).getTime() - new Date(b.deadline!).getTime())
-    .slice(0, 8);
+  const items = data?.items ?? [];
 
-  const freshThisWeek = [...opportunities]
-    .filter((o) => o.postedAt && Date.now() - new Date(o.postedAt).getTime() < 7 * 86400000)
-    .sort((a, b) => new Date(b.postedAt!).getTime() - new Date(a.postedAt!).getTime())
-    .slice(0, 8);
+  const closingSoon = [...items]
+    .filter((s) => {
+      const d = s.opportunity.deadline ? new Date(s.opportunity.deadline).getTime() : null;
+      return d != null && d >= now && d - now <= 30 * MS;
+    })
+    .sort((a, b) => new Date(a.opportunity.deadline!).getTime() - new Date(b.opportunity.deadline!).getTime())
+    .slice(0, 9);
 
-  const forYou = [...opportunities]
-    .sort((a, b) => (b.popularity ?? 0) - (a.popularity ?? 0))
-    .slice(0, 8);
+  const forYou = [...items].sort((a, b) => b.score - a.score).slice(0, 9);
 
-  const handleOpen = (id: string) => {
-    // For now, scroll to top — detail page will be a modal or separate route
-    window.location.href = `/opportunity/${id}`;
-  };
+  const fresh = [...items]
+    .filter((s) => s.opportunity.postedAt)
+    .sort((a, b) => new Date(b.opportunity.postedAt!).getTime() - new Date(a.opportunity.postedAt!).getTime())
+    .slice(0, 9);
 
   return (
-    <div className="flex flex-col gap-8 py-6 px-4 md:px-6">
-      {/* ── Hero ── */}
-      <div className="text-center md:text-left">
-        <h1 className="text-3xl md:text-5xl font-extrabold tracking-tight mb-3">
-          Every opportunity,{" "}
-          <span className="text-transparent bg-clip-text bg-gradient-to-r from-[var(--color-signal-500)] to-purple-500">made for you.</span>
+    <div className="px-4 py-5 sm:px-6 sm:py-6">
+      {/* hero */}
+      <header className="mb-6">
+        <h1 className="font-display text-[2rem] font-bold leading-[1.04] tracking-tight text-ink sm:text-[2.6rem]">
+          Every opportunity,
+          <br />
+          <span className="text-signal-600">made for you.</span>
         </h1>
-        <p className="text-ink-2 text-base md:text-lg flex items-center gap-2 justify-center md:justify-start">
-          <Activity className="w-4 h-4 text-signal-500 live-blip drop-shadow-[0_0_8px_var(--color-signal-500)]" />
-          <span className="tabular-nums font-medium text-white">{totalLive} live</span>
-          <span className="text-ink-3">·</span>
-          <span className="tabular-nums font-medium text-white">{closingThisWeek} closing this week</span>
+        <p className="mt-2.5 text-sm text-ink-2">
+          {data ? (
+            <>
+              <span className="font-semibold text-ink">{data.facets.total.toLocaleString("en-IN")}</span> live across every
+              source
+              {data.facets.closingThisWeek > 0 && (
+                <>
+                  {" · "}
+                  <span className="font-medium text-amber">{data.facets.closingThisWeek}</span> closing this week
+                </>
+              )}
+            </>
+          ) : (
+            "Aggregating live internships, scholarships, competitions & hackathons…"
+          )}
         </p>
+      </header>
+
+      {/* category tiles */}
+      <div className="mb-7">
+        <CategoryTiles facets={data?.facets ?? null} />
       </div>
 
-      {/* ── Category Tiles ── */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        {ALL_CATEGORIES.map((cat) => {
-          const meta = CATEGORY_META[cat];
-          const CatIcon = meta.icon;
-          const count = categoryCounts[cat];
-          return (
-            <Link
-              key={cat}
-              href={`/c/${cat}`}
-              className="panel group relative overflow-hidden p-5 flex flex-col gap-3 transition-all duration-300 hover:-translate-y-1"
-              style={{
-                background: `linear-gradient(135deg, ${meta.hex}22, ${meta.hex}08)`,
-                backdropFilter: 'blur(24px)',
-                border: `1px solid ${meta.hex}33`,
-                boxShadow: `0 4px 24px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.1)`
-              }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.boxShadow = `0 12px 32px ${meta.hex}44, inset 0 1px 0 rgba(255,255,255,0.2), 0 0 0 1px ${meta.hex}`;
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.boxShadow = `0 4px 24px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.1)`;
-              }}
-            >
-              <div
-                className="w-10 h-10 rounded-xl flex items-center justify-center backdrop-blur-md"
-                style={{ background: `${meta.hex}33`, boxShadow: `inset 0 0 0 1px ${meta.hex}55` }}
-              >
-                <CatIcon className="w-5 h-5" style={{ color: meta.hex, filter: `drop-shadow(0 0 8px ${meta.hex})` }} />
-              </div>
-              <div>
-                <h3 className="text-sm font-bold text-white tracking-wide">{meta.labelPlural}</h3>
-                <div className="flex items-center gap-1.5 mt-1">
-                  <span
-                    className="live-blip"
-                    style={{ background: meta.hex, width: 6, height: 6, filter: `drop-shadow(0 0 6px ${meta.hex})` }}
-                  />
-                  <span className="text-xs font-semibold tabular-nums" style={{ color: meta.hex }}>
-                    {count} live
-                  </span>
-                </div>
-              </div>
-              {/* Watermark */}
-              <CatIcon
-                className="absolute -bottom-4 -right-4 w-20 h-20 opacity-[0.2]"
-                style={{ color: meta.hex }}
-                strokeWidth={1}
-              />
-            </Link>
-          );
-        })}
-      </div>
+      {/* rails */}
+      <Rail title="Closing soon" subtitle="Deadlines you can still catch" href="/c/internship" items={closingSoon} onOpen={setSelected} loading={!data} urgent />
+      {(profile.onboarded || forYou.length > 0) && (
+        <Rail title="For you" subtitle={profile.onboarded ? "Matched to your profile" : "Personalise to sharpen these"} href="/for-you" items={forYou} onOpen={setSelected} loading={!data} />
+      )}
+      <Rail title="Fresh this week" items={fresh} onOpen={setSelected} loading={!data} />
 
-      {/* ── Rails ── */}
-      <Rail
-        title="Closing soon"
-        accentColor="var(--color-amber)"
-        linkHref="/c/internship"
-        linkText="See all"
-        opportunities={closingSoon}
-        saved={saved}
-        onSave={toggleSave}
-        onOpen={handleOpen}
-      />
-
-      <Rail
-        title="For you"
-        accentColor="var(--color-signal-500)"
-        linkHref="/for-you"
-        linkText="See all"
-        opportunities={forYou}
-        saved={saved}
-        onSave={toggleSave}
-        onOpen={handleOpen}
-      />
-
-      <Rail
-        title="Fresh this week"
-        accentColor="var(--color-success)"
-        linkHref="/feed"
-        linkText="See all"
-        opportunities={freshThisWeek}
-        saved={saved}
-        onSave={toggleSave}
-        onOpen={handleOpen}
-      />
+      <OpportunityDetail scored={selected} onClose={() => setSelected(null)} />
     </div>
-  );
-}
-
-function Rail({
-  title,
-  accentColor,
-  linkHref,
-  linkText,
-  opportunities,
-  saved,
-  onSave,
-  onOpen,
-}: {
-  title: string;
-  accentColor: string;
-  linkHref: string;
-  linkText: string;
-  opportunities: Opportunity[];
-  saved: string[];
-  onSave: (id: string) => void;
-  onOpen: (id: string) => void;
-}) {
-  if (opportunities.length === 0) return null;
-  return (
-    <section>
-      <div className="flex items-center justify-between mb-4">
-        <div className="flex items-center gap-2">
-          <div className="w-1 h-5 rounded-full" style={{ background: accentColor }} />
-          <h2 className="text-lg font-bold text-ink">{title}</h2>
-        </div>
-        <Link
-          href={linkHref}
-          className="text-sm font-semibold flex items-center gap-1 transition-colors"
-          style={{ color: accentColor }}
-        >
-          {linkText} <ArrowRight className="w-3.5 h-3.5" />
-        </Link>
-      </div>
-      <div className="flex gap-4 overflow-x-auto pb-2 -mx-4 px-4 snap-x snap-mandatory no-scrollbar">
-        {opportunities.map((opp) => (
-          <div key={opp.id} className="shrink-0 w-[260px] md:w-[280px] snap-start">
-            <OpportunityCard
-              opp={opp}
-              saved={saved.includes(opp.id)}
-              onSave={onSave}
-              onOpen={onOpen}
-            />
-          </div>
-        ))}
-      </div>
-    </section>
   );
 }
